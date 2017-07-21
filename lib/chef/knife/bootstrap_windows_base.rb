@@ -1,6 +1,6 @@
 #
-# Author:: Seth Chisamore (<schisamo@opscode.com>)
-# Copyright:: Copyright (c) 2011 Opscode, Inc.
+# Author:: Seth Chisamore (<schisamo@chef.io>)
+# Copyright:: Copyright (c) 2011-2016 Chef Software, Inc.
 # License:: Apache License, Version 2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,12 +20,15 @@ require 'chef/knife'
 require 'chef/knife/bootstrap'
 require 'chef/encrypted_data_bag_item'
 require 'chef/knife/core/windows_bootstrap_context'
+require 'chef/knife/knife_windows_base'
 # Chef 11 PathHelper doesn't have #home
 #require 'chef/util/path_helper'
 
 class Chef
   class Knife
     module BootstrapWindowsBase
+
+      include Chef::Knife::KnifeWindowsBase
 
       # :nodoc:
       # Would prefer to do this in a rational way, but can't be done b/c of
@@ -58,20 +61,38 @@ class Chef
             :proc => Proc.new { |p| Chef::Config[:knife][:bootstrap_proxy] = p }
 
           option :bootstrap_no_proxy,
-            :long => "--bootstrap-no-proxy ",
-            :description => "Avoid a proxy server for the given addresses",
+            :long => "--bootstrap-no-proxy [NO_PROXY_URL|NO_PROXY_IP]",
+            :description => "Do not proxy locations for the node being bootstrapped; this option is used internally by Opscode",
             :proc => Proc.new { |np| Chef::Config[:knife][:bootstrap_no_proxy] = np }
 
+          option :bootstrap_install_command,
+            :long        => "--bootstrap-install-command COMMANDS",
+            :description => "Custom command to install chef-client",
+            :proc        => Proc.new { |ic| Chef::Config[:knife][:bootstrap_install_command] = ic }
+
+          # DEPR: Remove this option in Chef 13
           option :distro,
             :short => "-d DISTRO",
             :long => "--distro DISTRO",
-            :description => "Bootstrap a distro using a template",
-            :default => "windows-chef-client-msi"
+            :description => "Bootstrap a distro using a template. [DEPRECATED] Use -t / --bootstrap-template option instead.",
+            :proc        => Proc.new { |v|
+              Chef::Log.warn("[DEPRECATED] -d / --distro option is deprecated. Use --bootstrap-template option instead.")
+              v
+            }
 
+          option :bootstrap_template,
+            :short => "-t TEMPLATE",
+            :long => "--bootstrap-template TEMPLATE",
+            :description => "Bootstrap Chef using a built-in or custom template. Set to the full path of an erb template or use one of the built-in templates."
+
+          # DEPR: Remove this option in Chef 13
           option :template_file,
             :long => "--template-file TEMPLATE",
-            :description => "Full path to location of template to use",
-            :default => false
+            :description => "Full path to location of template to use. [DEPRECATED] Use -t / --bootstrap-template option instead.",
+            :proc        => Proc.new { |v|
+              Chef::Log.warn("[DEPRECATED] --template-file option is deprecated. Use --bootstrap-template option instead.")
+              v
+            }
 
           option :run_list,
             :short => "-r RUN_LIST",
@@ -80,18 +101,33 @@ class Chef
             :proc => lambda { |o| o.split(",") },
             :default => []
 
+          option :hint,
+            :long => "--hint HINT_NAME[=HINT_FILE]",
+            :description => "Specify Ohai Hint to be set on the bootstrap target. Use multiple --hint options to specify multiple hints.",
+            :proc => Proc.new { |h|
+              Chef::Config[:knife][:hints] ||= Hash.new
+              name, path = h.split("=")
+              Chef::Config[:knife][:hints][name] = path ? Chef::JSONCompat.parse(::File.read(path)) : Hash.new
+            }
+
           option :first_boot_attributes,
             :short => "-j JSON_ATTRIBS",
             :long => "--json-attributes",
             :description => "A JSON string to be added to the first run of chef-client",
             :proc => lambda { |o| JSON.parse(o) },
-            :default => {}
+            :default => nil
+
+          option :first_boot_attributes_from_file,
+            :long => "--json-attribute-file FILE",
+            :description => "A JSON file to be used to the first run of chef-client",
+            :proc => lambda { |o| Chef::JSONCompat.parse(File.read(o)) },
+            :default => nil
 
           # Mismatch between option 'encrypted_data_bag_secret' and it's long value '--secret' is by design for compatibility
           option :encrypted_data_bag_secret,
             :short => "-s SECRET",
             :long  => "--secret ",
-            :description => "The secret key to use to decrypt data bag item values.  Will be rendered on the node at c:/chef/encrypted_data_bag_secret and set in the rendered client config.",
+            :description => "The secret key to use to decrypt data bag item values. Will be rendered on the node at c:/chef/encrypted_data_bag_secret and set in the rendered client config.",
             :default => false
 
           # Mismatch between option 'encrypted_data_bag_secret_file' and it's long value '--secret-file' is by design for compatibility
@@ -112,6 +148,7 @@ class Chef
               unless valid_values.include?(v)
                 raise "Invalid value '#{v}' for --node-ssl-verify-mode. Valid values are: #{valid_values.join(", ")}"
               end
+              v
             }
 
           option :node_verify_api_cert,
@@ -121,30 +158,82 @@ class Chef
 
           option :msi_url,
             :short => "-u URL",
-            :long => "--msi_url URL",
+            :long => "--msi-url URL",
             :description => "Location of the Chef Client MSI. The default templates will prefer to download from this location. The MSI will be downloaded from chef.io if not provided.",
             :default => ''
 
           option :install_as_service,
             :long => "--install-as-service",
-            :description => "Install chef-client as service in windows machine",
+            :description => "Install chef-client as a Windows service",
             :default => false
+
+          option :bootstrap_vault_file,
+          :long        => '--bootstrap-vault-file VAULT_FILE',
+          :description => 'A JSON file with a list of vault(s) and item(s) to be updated'
+
+          option :bootstrap_vault_json,
+            :long        => '--bootstrap-vault-json VAULT_JSON',
+            :description => 'A JSON string with the vault(s) and item(s) to be updated'
+
+          option :bootstrap_vault_item,
+            :long        => '--bootstrap-vault-item VAULT_ITEM',
+            :description => 'A single vault and item to update as "vault:item"',
+            :proc        => Proc.new { |i|
+              (vault, item) = i.split(/:/)
+              Chef::Config[:knife][:bootstrap_vault_item] ||= {}
+              Chef::Config[:knife][:bootstrap_vault_item][vault] ||= []
+              Chef::Config[:knife][:bootstrap_vault_item][vault].push(item)
+              Chef::Config[:knife][:bootstrap_vault_item]
+            }
+
+          option :policy_name,
+            :long         => "--policy-name POLICY_NAME",
+            :description  => "Policyfile name to use (--policy-group must also be given)",
+            :default      => nil
+
+          option :policy_group,
+            :long         => "--policy-group POLICY_GROUP",
+            :description  => "Policy group name to use (--policy-name must also be given)",
+            :default      => nil
+
+          option :tags,
+            :long => "--tags TAGS",
+            :description => "Comma separated list of tags to apply to the node",
+            :proc => lambda { |o| o.split(/[\s,]+/) },
+            :default => []
         end
       end
 
-      # TODO: This should go away when CHEF-2193 is fixed
+      def default_bootstrap_template
+        "windows-chef-client-msi"
+      end
+
+      def bootstrap_template
+        # The order here is important. We want to check if we have the new Chef 12 option is set first.
+        # Knife cloud plugins unfortunately all set a default option for the :distro so it should be at
+        # the end.
+        config[:bootstrap_template] || config[:template_file] || config[:distro] || default_bootstrap_template
+      end
+
+       # TODO: This should go away when CHEF-2193 is fixed
       def load_template(template=nil)
         # Are we bootstrapping using an already shipped template?
-        if config[:template_file]
-          bootstrap_files = config[:template_file]
-        else
-          bootstrap_files = []
-          bootstrap_files << File.join(File.dirname(__FILE__), 'bootstrap', "#{config[:distro]}.erb")
-          bootstrap_files << File.join(Dir.pwd, ".chef", "bootstrap", "#{config[:distro]}.erb")
-          ::Knife::Windows::PathHelper.all_homes('.chef', 'bootstrap', "#{config[:distro]}.erb") { |p| bootstrap_files << p }
-          bootstrap_files << Gem.find_files(File.join("chef","knife","bootstrap","#{config[:distro]}.erb"))
-          bootstrap_files.flatten!
+
+        template = bootstrap_template
+
+        # Use the template directly if it's a path to an actual file
+        if File.exists?(template)
+          Chef::Log.debug("Using the specified bootstrap template: #{File.dirname(template)}")
+          return IO.read(template).chomp
         end
+
+        # Otherwise search the template directories until we find the right one
+        bootstrap_files = []
+        bootstrap_files << File.join(File.dirname(__FILE__), 'bootstrap/templates', "#{template}.erb")
+        bootstrap_files << File.join(Knife.chef_config_dir, "bootstrap", "#{template}.erb") if Chef::Knife.chef_config_dir
+        ::Knife::Windows::PathHelper.all_homes('.chef', 'bootstrap', "#{template}.erb") { |p| bootstrap_files << p }
+        bootstrap_files << Gem.find_files(File.join("chef","knife","bootstrap","#{template}.erb"))
+        bootstrap_files.flatten!
 
         template = Array(bootstrap_files).find do |bootstrap_template|
           Chef::Log.debug("Looking for bootstrap template in #{File.dirname(bootstrap_template)}")
@@ -161,23 +250,44 @@ class Chef
         IO.read(template).chomp
       end
 
+      def bootstrap_context
+        @bootstrap_context ||= Knife::Core::WindowsBootstrapContext.new(config, config[:run_list], Chef::Config)
+      end
+
+      def load_correct_secret
+        knife_secret_file = Chef::Config[:knife][:encrypted_data_bag_secret_file]
+        knife_secret = Chef::Config[:knife][:encrypted_data_bag_secret]
+        cli_secret_file = config[:encrypted_data_bag_secret_file]
+        cli_secret = config[:encrypted_data_bag_secret]
+
+        cli_secret_file = nil if cli_secret_file == knife_secret_file
+        cli_secret = nil if cli_secret == knife_secret
+
+        cli_secret_file = Chef::EncryptedDataBagItem.load_secret(cli_secret_file) if cli_secret_file != nil
+        knife_secret_file = Chef::EncryptedDataBagItem.load_secret(knife_secret_file) if knife_secret_file != nil
+
+        cli_secret_file || cli_secret || knife_secret_file || knife_secret
+      end
+
+      def first_boot_attributes
+        config[:first_boot_attributes] || config[:first_boot_attributes_from_file] || {}
+      end
+
       def render_template(template=nil)
-        if config[:secret_file]
-          config[:secret] = Chef::EncryptedDataBagItem.load_secret(config[:secret_file])
-        end
-        context = Knife::Core::WindowsBootstrapContext.new(config, config[:run_list], Chef::Config)
-        Erubis::Eruby.new(template).evaluate(context)
+        config[:first_boot_attributes] = first_boot_attributes
+        config[:secret] = load_correct_secret
+        Erubis::Eruby.new(template).evaluate(bootstrap_context)
       end
 
       def bootstrap(proto=nil)
         if Chef::Config[:knife][:encrypted_data_bag_secret_file] || Chef::Config[:knife][:encrypted_data_bag_secret]
           warn_chef_config_secret_key
-          config[:secret_file] ||= Chef::Config[:knife][:encrypted_data_bag_secret_file]
-          config[:secret] ||= Chef::Config[:knife][:encrypted_data_bag_secret]
         end
-        
-        validate_name_args!
 
+        set_target_architecture
+
+        # adding respond_to? so this works with pre 12.4 chef clients
+        validate_options! if respond_to?(:validate_options!)
 
         @node_name = Array(@name_args).first
         # back compat--templates may use this setting:
@@ -185,24 +295,57 @@ class Chef
 
         STDOUT.sync = STDERR.sync = true
 
+        if Chef::VERSION.split('.').first.to_i == 11 && Chef::Config[:validation_key] && !File.exist?(File.expand_path(Chef::Config[:validation_key]))
+          ui.error("Unable to find validation key. Please verify your configuration file for validation_key config value.")
+          exit 1
+        end
+
+        if (defined?(chef_vault_handler) && chef_vault_handler.doing_chef_vault?) ||
+            (Chef::Config[:validation_key] && !File.exist?(File.expand_path(Chef::Config[:validation_key])))
+
+          unless locate_config_value(:chef_node_name)
+            ui.error("You must pass a node name with -N when bootstrapping with user credentials")
+            exit 1
+          end
+
+          client_builder.run
+
+          if client_builder.respond_to?(:client)
+            chef_vault_handler.run(client_builder.client)
+          else
+            chef_vault_handler.run(node_name: config[:chef_node_name])
+          end
+
+          bootstrap_context.client_pem = client_builder.client_path
+
+        else
+          ui.info("Doing old-style registration with the validation key at #{Chef::Config[:validation_key]}...")
+          ui.info("Delete your validation key in order to use your user credentials instead")
+          ui.info("")
+        end
+
         wait_for_remote_response( config[:auth_timeout].to_i )
+
         ui.info("Bootstrapping Chef on #{ui.color(@node_name, :bold)}")
         # create a bootstrap.bat file on the node
         # we have to run the remote commands in 2047 char chunks
         create_bootstrap_bat_command do |command_chunk|
-          begin
-            render_command_result = run_command(command_chunk)
-            ui.error("Batch render command returned #{render_command_result}") if render_command_result != 0
-            render_command_result
-          rescue SystemExit => e
-            raise unless e.success?
+          render_command_result = run_command(command_chunk)
+          unless render_command_result == 0
+            ui.error("Batch render command returned #{render_command_result}")
+            exit render_command_result
           end
         end
 
         # execute the bootstrap.bat file
         bootstrap_command_result = run_command(bootstrap_command)
-        ui.error("Bootstrap command returned #{bootstrap_command_result}") if bootstrap_command_result != 0
-        bootstrap_command_result
+        unless bootstrap_command_result == 0
+          ui.error("Bootstrap command returned #{bootstrap_command_result}")
+          exit bootstrap_command_result
+        end
+
+        # exit 0
+        0
       end
 
       protected
@@ -263,11 +406,6 @@ class Chef
         @bootstrap_bat_file ||= "\"%TEMP%\\bootstrap-#{Process.pid}-#{Time.now.to_i}.bat\""
       end
 
-      def locate_config_value(key)
-        key = key.to_sym
-        config[key] || Chef::Config[:knife][key]
-      end
-
       def warn_chef_config_secret_key
         ui.info "* " * 40
         ui.warn(<<-WARNING)
@@ -280,6 +418,27 @@ behavior will be removed and any 'encrypted_data_bag_secret' entries in
 'knife.rb' will be ignored completely.
         WARNING
         ui.info "* " * 40
+      end
+
+      # We allow the user to specify the desired architecture of Chef to install or we default
+      # to whatever the target system is.
+      # This is because a user might want to install a 32bit chef client on a 64bit machine
+      def set_target_architecture
+        if Chef::Config[:knife][:architecture]
+          raise "Do not set :architecture in your knife config, use :bootstrap_architecture."
+        end
+
+        if Chef::Config[:knife][:bootstrap_architecture]
+          bootstrap_architecture = Chef::Config[:knife][:bootstrap_architecture]
+
+          if ![:x86_64, :i386].include?(bootstrap_architecture.to_sym)
+            raise "Valid values for the knife config :bootstrap_architecture are i386 or x86_64. Supplied value is #{bootstrap_architecture}"
+          end
+
+          # The windows install script wants i686, not i386
+          bootstrap_architecture = :i686 if bootstrap_architecture == :i386
+          Chef::Config[:knife][:architecture] = bootstrap_architecture
+        end
       end
     end
   end

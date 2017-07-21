@@ -1,6 +1,6 @@
 #
 # Author:: Steven Murawski <smurawski@chef.io>
-# Copyright:: Copyright (c) 2015 Opscode, Inc.
+# Copyright:: Copyright (c) 2015-2016 Chef Software, Inc.
 # License:: Apache License, Version 2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,31 +17,85 @@
 #
 
 require 'spec_helper'
+require 'dummy_winrm_connection'
 
 Chef::Knife::Winrm.load_deps
 
 
 describe Chef::Knife::WinrmSession do
+  let(:winrm_connection) { Dummy::Connection.new }
+  let(:options) { { transport: :plaintext } }
+
+  before do
+    @original_config = Chef::Config.hash_dup
+    allow(WinRM::Connection).to receive(:new).and_return(winrm_connection)
+  end
+
+  after do
+    Chef::Config.configuration = @original_config
+  end
+
+  subject { Chef::Knife::WinrmSession.new(options) }
+
+  describe "#initialize" do
+    context "when a proxy is configured" do
+      let(:proxy_uri) { 'blah.com' }
+      let(:ssl_policy) { double('DefaultSSLPolicy', :set_custom_certs => nil) }
+
+      before do
+        Chef::Config[:http_proxy] = proxy_uri
+      end
+
+      it "sets the http_proxy to the configured proxy" do
+        subject
+        expect(ENV['HTTP_PROXY']).to eq("http://#{proxy_uri}")
+      end
+
+      it "sets the ssl policy on the winrm client" do
+        expect(Chef::HTTP::DefaultSSLPolicy).to receive(:new)
+          .with(winrm_connection.transport.httpcli.ssl_config)
+          .and_return(ssl_policy)
+        expect(ssl_policy).to receive(:set_custom_certs)
+        subject
+      end
+
+    end
+  end
+
   describe "#relay_command" do
-    before do
-      @service_mock = Object.new
-      @service_mock.define_singleton_method(:open_shell){}
-      @service_mock.define_singleton_method(:run_command){}
-      @service_mock.define_singleton_method(:cleanup_command){}
-      @service_mock.define_singleton_method(:get_command_output){|t,y| {}}
-      @service_mock.define_singleton_method(:close_shell){}
-      allow(Chef::Knife::WinrmSession).to receive(:new).with(hash_including(:transport => :plaintext)).and_call_original
-      allow(WinRM::WinRMWebService).to receive(:new).and_return(@service_mock)
-      @session = Chef::Knife::WinrmSession.new({transport: :plaintext})
+    it "run command and display commands output" do
+      expect(winrm_connection).to receive(:shell)
+      subject.relay_command("cmd.exe echo 'hi'")
     end
 
-    it "run command and display commands output" do
-      expect(@service_mock).to receive(:open_shell).ordered
-      expect(@service_mock).to receive(:run_command).ordered
-      expect(@service_mock).to receive(:get_command_output).ordered.and_return({})
-      expect(@service_mock).to receive(:cleanup_command).ordered
-      expect(@service_mock).to receive(:close_shell).ordered
-      @session.relay_command("cmd.exe echo 'hi'")
+    it "exits with 401 if command execution raises a 401" do
+      expect(winrm_connection).to receive(:shell).and_raise(WinRM::WinRMHTTPTransportError.new('', '401'))
+      expect { subject.relay_command("cmd.exe echo 'hi'") }.to raise_error(WinRM::WinRMHTTPTransportError)
+      expect(subject.exit_code).to eql(401)
+    end
+
+    context "cmd shell" do
+      before do
+        options[:shell] = :cmd
+        options[:codepage] = 65001
+      end
+
+      it "creates shell and sends codepage" do
+        expect(winrm_connection).to receive(:shell).with(:cmd, hash_including(codepage: 65001))
+        subject.relay_command("cmd.exe echo 'hi'")
+      end
+    end
+
+    context "powershell shell" do
+      before do
+        options[:shell] = :powershell
+        options[:codepage] = 65001
+      end
+
+      it "does not send codepage to shell" do
+        expect(winrm_connection).to receive(:shell).with(:powershell)
+        subject.relay_command("cmd.exe echo 'hi'")
+      end
     end
   end
 end

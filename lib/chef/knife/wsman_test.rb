@@ -1,6 +1,6 @@
 #
 # Author:: Steven Murawski (<smurawski@chef.io>)
-# Copyright:: Copyright (c) 2015 Chef Software, Inc.
+# Copyright:: Copyright (c) 2015-2016 Chef Software, Inc.
 # License:: Apache License, Version 2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,11 +17,9 @@
 #
 
 require 'httpclient'
-require 'nokogiri'
 require 'chef/knife'
 require 'chef/knife/winrm_knife_base'
 require 'chef/knife/wsman_endpoint'
-require 'pry'
 
 class Chef
   class Knife
@@ -36,49 +34,37 @@ class Chef
       banner "knife wsman test QUERY (options)"
 
       def run
-        @config[:winrm_authentication_protocol] = 'basic'
+        # pass a dummy password to avoid prompt for password
+        # but it does nothing
+        @config[:winrm_password] = 'cute_little_kittens'
+
         configure_session
         verify_wsman_accessiblity_for_nodes
       end
+
+      private
 
       def verify_wsman_accessiblity_for_nodes
         error_count = 0
         @winrm_sessions.each do |item|
           Chef::Log.debug("checking for WSMAN availability at #{item.endpoint}")
 
-          xml = '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:wsmid="http://schemas.dmtf.org/wbem/wsman/identity/1/wsmanidentity.xsd"><s:Header/><s:Body><wsmid:Identify/></s:Body></s:Envelope>'
-          header = {
-            'WSMANIDENTIFY' => 'unauthenticated',
-            'Content-Type' => 'application/soap+xml; charset=UTF-8'
-          }
-          output_object = Chef::Knife::WsmanEndpoint.new(item.host, item.port, item.endpoint)
-          error_message = nil
+          ssl_error = nil
           begin
-            client = HTTPClient.new
-            response = client.post(item.endpoint, xml, header)
-          rescue Exception => e
-            error_message = e.message
-          else
+            response = post_identity_request(item.endpoint)
             ui.msg "Connected successfully to #{item.host} at #{item.endpoint}."
-            output_object.response_status_code = response.status_code
+          rescue Exception => err
           end
 
-          if response.nil? || output_object.response_status_code != 200
-            error_message = "No valid WSMan endoint listening at #{item.endpoint}."
-          else
-            doc = Nokogiri::XML response.body
-            namespace = 'http://schemas.dmtf.org/wbem/wsman/identity/1/wsmanidentity.xsd'
-            output_object.protocol_version = doc.xpath('//wsmid:ProtocolVersion', 'wsmid' => namespace).text
-            output_object.product_version  = doc.xpath('//wsmid:ProductVersion',  'wsmid' => namespace).text
-            output_object.product_vendor  = doc.xpath('//wsmid:ProductVendor',   'wsmid' => namespace).text
-            if output_object.protocol_version.to_s.strip.length == 0
-              error_message = "Endpoint #{item.endpoint} on #{item.host} does not appear to be a WSMAN endpoint."
-            end
-          end
+          output_object = parse_response(item, response)
+          output_object.error_message += "\r\nError returned from endpoint: #{err.message}" if err
 
-          unless error_message.nil?
+          unless output_object.error_message.nil?
             ui.warn "Failed to connect to #{item.host} at #{item.endpoint}."
-            output_object.error_message = error_message
+            if err && err.is_a?(OpenSSL::SSL::SSLError)
+              ui.warn "Failure due to an issue with SSL; likely cause would be unsuccessful certificate verification."
+              ui.warn "Either ensure your certificate is valid or use '--winrm-ssl-verify-mode verify_none' to ignore verification failures."
+            end
             error_count += 1
           end
 
@@ -90,6 +76,42 @@ class Chef
           ui.error "Failed to connect to #{error_count} nodes."
           exit 1
         end
+      end
+
+      def post_identity_request(endpoint)
+        xml = '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:wsmid="http://schemas.dmtf.org/wbem/wsman/identity/1/wsmanidentity.xsd"><s:Header/><s:Body><wsmid:Identify/></s:Body></s:Envelope>'
+        header = {
+          'WSMANIDENTIFY' => 'unauthenticated',
+          'Content-Type' => 'application/soap+xml; charset=UTF-8'
+        }
+
+        client = HTTPClient.new
+        Chef::HTTP::DefaultSSLPolicy.new(client.ssl_config).set_custom_certs
+        client.ssl_config.verify_mode = OpenSSL::SSL::VERIFY_NONE if resolve_no_ssl_peer_verification
+        client.post(endpoint, xml, header)
+      end
+
+      def parse_response(node, response)
+        output_object = Chef::Knife::WsmanEndpoint.new(node.host, node.port, node.endpoint)
+        output_object.response_status_code = response.status_code unless response.nil?
+
+        if response.nil? || response.status_code != 200
+          output_object.error_message = "No valid WSMan endoint listening at #{node.endpoint}."
+        else
+          doc = REXML::Document.new(response.body)
+          output_object.protocol_version = search_xpath(doc, "//wsmid:ProtocolVersion")
+          output_object.product_version  = search_xpath(doc, "//wsmid:ProductVersion")
+          output_object.product_vendor  = search_xpath(doc, "//wsmid:ProductVendor")
+          if output_object.protocol_version.to_s.strip.length == 0
+            output_object.error_message = "Endpoint #{node.endpoint} on #{node.host} does not appear to be a WSMAN endpoint. Response body was #{response.body}"
+          end
+        end
+        output_object
+      end
+
+      def search_xpath(document, property_name)
+        result = REXML::XPath.match(document, property_name)
+        result[0].nil? ? '' : result[0].text
       end
     end
   end

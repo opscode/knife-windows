@@ -1,6 +1,6 @@
 #
-# Author:: Seth Chisamore (<schisamo@opscode.com>)
-# Copyright:: Copyright (c) 2011 Opscode, Inc.
+# Author:: Seth Chisamore (<schisamo@chef.io>)
+# Copyright:: Copyright (c) 2011-2016 Chef Software, Inc.
 # License:: Apache License, Version 2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -51,10 +51,16 @@ class Chef
             :description => "The WinRM password",
             :proc => Proc.new { |key| Chef::Config[:knife][:winrm_password] = key }
 
+          option :winrm_shell,
+            :long => "--winrm-shell SHELL",
+            :description => "The WinRM shell type. Valid choices are [cmd, powershell, elevated]. 'elevated' runs powershell in a scheduled task",
+            :default => :cmd,
+            :proc => Proc.new { |shell| shell.to_sym }
+
           option :winrm_transport,
             :short => "-t TRANSPORT",
             :long => "--winrm-transport TRANSPORT",
-            :description => "The WinRM transport type.  valid choices are [ssl, plaintext]",
+            :description => "The WinRM transport type. Valid choices are [ssl, plaintext]",
             :default => 'plaintext',
             :proc => Proc.new { |transport| Chef::Config[:knife][:winrm_port] = '5986' if transport == 'ssl'
                                 Chef::Config[:knife][:winrm_transport] = transport }
@@ -66,13 +72,8 @@ class Chef
             :default => '5985',
             :proc => Proc.new { |key| Chef::Config[:knife][:winrm_port] = key }
 
-          option :identity_file,
-            :short => "-i IDENTITY_FILE",
-            :long => "--identity-file IDENTITY_FILE",
-            :description => "The SSH identity file used for authentication"
-
           option :kerberos_keytab_file,
-            :short => "-i KEYTAB_FILE",
+            :short => "-T KEYTAB_FILE",
             :long => "--keytab-file KEYTAB_FILE",
             :description => "The Kerberos keytab file used for authentication",
             :proc => Proc.new { |keytab| Chef::Config[:knife][:kerberos_keytab_file] = keytab }
@@ -101,6 +102,10 @@ class Chef
             :default => :verify_peer,
             :proc => Proc.new { |verify_mode| verify_mode.to_sym }
 
+          option :ssl_peer_fingerprint,
+            :long => "--ssl-peer-fingerprint FINGERPRINT",
+            :description => "ssl Cert Fingerprint to bypass normal cert chain checks"
+
           option :winrm_authentication_protocol,
             :long => "--winrm-authentication-protocol AUTHENTICATION_PROTOCOL",
             :description => "The authentication protocol used during WinRM communication. The supported protocols are #{WINRM_AUTH_PROTOCOL_LIST.join(',')}. Default is 'negotiate'.",
@@ -111,14 +116,12 @@ class Chef
             :long => "--session-timeout Minutes",
             :description => "The timeout for the client for the maximum length of the WinRM session",
             :default => 30
-        end
-      end
 
-      def locate_config_value(key)
-        key = key.to_sym
-        value = config[key] || Chef::Config[:knife][key] || default_config[key]
-        Chef::Log.debug("Looking for key #{key} and found value #{value}")
-        value
+          option :winrm_codepage,
+            :long => "--winrm-codepage Codepage",
+            :description => "The codepage to use for the winrm cmd shell",
+            :default => 65001
+        end
       end
     end
   end

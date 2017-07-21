@@ -28,10 +28,10 @@ describe Chef::Knife::BootstrapWindowsWinrm do
     knife.parse_options(options)
     # Avoid referencing a validation keyfile we won't find during #render_template
     template = IO.read(template_file).chomp
-    template_string = template.gsub(/^.*[Vv]alidation_key.*$/, '')
-    knife.render_template(template_string)
+    knife.render_template(template)
   end
-  
+  subject(:knife) { described_class.new }
+
   before(:all) do
     @original_config = Chef::Config.hash_dup
     @original_knife_config = Chef::Config[:knife].dup
@@ -55,39 +55,44 @@ describe Chef::Knife::BootstrapWindowsWinrm do
   end
 
   describe "specifying no_proxy with various entries" do
-    subject(:knife) { described_class.new }
     let(:options){ ["--bootstrap-proxy", "", "--bootstrap-no-proxy", setting] }
 
     context "via --bootstrap-no-proxy" do
-      let(:setting) { "api.opscode.com" }
+      let(:setting) { "api.chef.io" }
 
       it "renders the client.rb with a single FQDN no_proxy entry" do
-        expect(rendered_template).to match(%r{.*no_proxy\s*\"api.opscode.com\".*})
+        expect(rendered_template).to match(%r{.*no_proxy\s*\"api.chef.io\".*})
       end
     end
     context "via --bootstrap-no-proxy multiple" do
-      let(:setting) { "api.opscode.com,172.16.10.*" }
+      let(:setting) { "api.chef.io,172.16.10.*" }
 
       it "renders the client.rb with comma-separated FQDN and wildcard IP address no_proxy entries" do
-        expect(rendered_template).to match(%r{.*no_proxy\s*"api.opscode.com,172.16.10.\*".*})
+        expect(rendered_template).to match(%r{.*no_proxy\s*"api.chef.io,172.16.10.\*".*})
       end
     end
   end
 
-  describe "specifying msi_url" do
-    subject(:knife) { described_class.new }
-
-    context "with explicitly provided msi_url" do
-      let(:options) { ["--msi_url", "file:///something.msi"] } 
+  describe "specifying --msi-url" do
+    context "with explicitly provided --msi-url" do
+      let(:options) { ["--msi-url", "file:///something.msi"] }
 
       it "bootstrap batch file must fetch from provided url" do
         expect(rendered_template).to match(%r{.*REMOTE_SOURCE_MSI_URL=file:///something\.msi.*})
       end
     end
-    context "with no provided msi_url" do
+    context "with no provided --msi-url" do
       it "bootstrap batch file must fetch from provided url" do
         expect(rendered_template).to match(%r{.*REMOTE_SOURCE_MSI_URL=https://www\.chef\.io/.*})
       end
     end
   end
+
+  describe "specifying knife_config[:architecture]" do
+    it "puts the target architecture into the msi_url" do
+      Chef::Config[:knife][:architecture] = :x86_64
+      expect(rendered_template).to match(/MACHINE_ARCH=x86_64/)
+    end
+  end
+
 end

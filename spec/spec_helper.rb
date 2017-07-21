@@ -1,6 +1,6 @@
 
-# Author:: Adam Edwards (<adamed@opscode.com>)
-# Copyright:: Copyright (c) 2012 Opscode, Inc.
+# Author:: Adam Edwards (<adamed@chef.io>)
+# Copyright:: Copyright (c) 2012-2016 Chef Software, Inc.
 # License:: Apache License, Version 2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,6 +23,7 @@ end
 
 require_relative '../lib/chef/knife/core/windows_bootstrap_context'
 require_relative '../lib/chef/knife/bootstrap_windows_winrm'
+require_relative '../lib/chef/knife/bootstrap_windows_ssh'
 require_relative '../lib/chef/knife/wsman_test'
 
 if windows?
@@ -54,9 +55,39 @@ def windows2012?
   is_win2k12
 end
 
-
-RSpec.configure do |config|
-  config.filter_run_excluding :windows_only => true unless windows?
-  config.filter_run_excluding :windows_2012_only => true unless windows2012?
+def chef_lt_12_5?
+  Gem::Version.new(Chef::VERSION) < Gem::Version.new('12.5')
 end
 
+def chef_gte_12_5?
+  Gem::Version.new(Chef::VERSION) >= Gem::Version.new('12.5')
+end
+
+def chef_gte_12_7?
+  Gem::Version.new(Chef::VERSION) >= Gem::Version.new('12.7')
+end
+
+def chef_gte_13?
+  Gem::Version.new(Chef::VERSION) >= Gem::Version.new('13')
+end
+
+def chef_lt_13?
+  Gem::Version.new(Chef::VERSION) < Gem::Version.new('13')
+end
+
+def sample_data(file_name)
+  file =  File.expand_path(File.dirname("spec/assets/*"))+"/#{file_name}"
+  File.read(file)
+end
+
+RSpec.configure do |config|
+  config.run_all_when_everything_filtered = true
+  config.filter_run :focus => true
+  config.filter_run_excluding :windows_only => true unless windows?
+  config.filter_run_excluding :windows_2012_only => true unless windows2012?
+  config.filter_run_excluding :chef_gte_12_5_only => true unless chef_gte_12_5?
+  config.filter_run_excluding :chef_gte_12_7_only => true unless chef_gte_12_7?
+  config.filter_run_excluding :chef_gte_13_only => true unless chef_gte_13?
+  config.filter_run_excluding :chef_lt_12_5_only => true unless chef_lt_12_5?
+  config.filter_run_excluding :chef_lt_13_only => true unless chef_lt_13?
+end

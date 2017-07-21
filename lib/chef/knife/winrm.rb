@@ -1,6 +1,6 @@
 #
-# Author:: Seth Chisamore (<schisamo@opscode.com>)
-# Copyright:: Copyright (c) 2011 Opscode, Inc.
+# Author:: Seth Chisamore (<schisamo@chef.io>)
+# Copyright:: Copyright (c) 2011-2016 Chef Software, Inc.
 # License:: Apache License, Version 2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,12 +22,14 @@ require 'chef/knife/windows_cert_generate'
 require 'chef/knife/windows_cert_install'
 require 'chef/knife/windows_listener_create'
 require 'chef/knife/winrm_session'
+require 'chef/knife/knife_windows_base'
 
 class Chef
   class Knife
-    class Winrm < Knife 
+    class Winrm < Knife
 
-      include Chef::Knife::WinrmCommandSharedFunctions     
+      include Chef::Knife::WinrmCommandSharedFunctions
+      include Chef::Knife::KnifeWindowsBase
 
       deps do
         require 'readline'
@@ -36,81 +38,32 @@ class Chef
 
       attr_writer :password
 
-      banner "knife winrm QUERY COMMAND (options)"      
+      banner "knife winrm QUERY COMMAND (options)"
 
       option :returns,
        :long => "--returns CODES",
        :description => "A comma delimited list of return codes which indicate success",
-       :default => "0"      
+       :default => "0"
 
       def run
-        STDOUT.sync = STDERR.sync = true        
+        STDOUT.sync = STDERR.sync = true
 
         configure_session
-        validate_password
-        execute_remote_command        
+        exit_status = execute_remote_command
+        if exit_status != 0
+          exit exit_status
+        else
+          exit_status
+        end
       end
 
       def execute_remote_command
-        begin
-          case @name_args[1]
-          when "interactive"
-            interactive
-          else
-            relay_winrm_command(@name_args[1..-1].join(" "))
-
-            if config[:returns]
-              check_for_errors!
-            end
-
-            # Knife seems to ignore the return value of this method,
-            # so we exit to force the process exit code for this
-            # subcommand if returns is set
-            exit @exit_code if @exit_code && @exit_code != 0
-            @exit_code || 0
-          end
-        rescue WinRM::WinRMHTTPTransportError => e
-          case e.message
-          when /401/
-            if ! config[:suppress_auth_failure]
-              # Display errors if the caller hasn't opted to retry
-              ui.error "Failed to authenticate to #{@name_args[0].split(" ")} as #{locate_config_value(:winrm_user)}"
-              ui.info "Response: #{e.message}"
-              ui.info "Hint: Please check winrm configuration 'winrm get winrm/config/service' AllowUnencrypted flag on remote server."
-              raise e
-            end
-            @exit_code = 401
-          else
-            raise e
-          end
+        case @name_args[1]
+        when "interactive"
+          interactive
+        else
+          run_command(@name_args[1..-1].join(" "))
         end
-      end
-
-      def relay_winrm_command(command)
-        Chef::Log.debug(command)
-        @winrm_sessions.each do |s|
-          s.relay_command(command)
-        end
-      end
-
-      # TODO: Copied from Knife::Core:GenericPresenter. Should be extracted
-      def extract_nested_value(data, nested_value_spec)
-        nested_value_spec.split(".").each do |attr|
-          if data.nil?
-            nil # don't get no method error on nil
-          elsif data.respond_to?(attr.to_sym)
-            data = data.send(attr.to_sym)
-          elsif data.respond_to?(:[])
-            data = data[attr]
-          else
-            data = begin
-                     data.send(attr.to_sym)
-                   rescue NoMethodError
-                     nil
-                   end
-          end
-        end
-        ( !data.kind_of?(Array) && data.respond_to?(:to_hash) ) ? data.to_hash : data
       end
 
       private
@@ -145,16 +98,6 @@ class Chef
         end
       end
 
-      def check_for_errors!
-        @winrm_sessions.each do |session|
-          session_exit_code = session.exit_code
-          unless success_return_codes.include? session_exit_code.to_i
-            @exit_code = session_exit_code.to_i
-            ui.error "Failed to execute command on #{session.host} return code #{session_exit_code}"
-          end
-        end
-      end
-
       # Present the prompt and read a single line from the console. It also
       # detects ^D and returns "exit" in that case. Adds the input to the
       # history, unless the input is empty. Loops repeatedly until a non-empty
@@ -176,16 +119,9 @@ class Chef
         end
       end
 
-      def reader        
+      def reader
         Readline
       end
-
-      def success_return_codes
-        #Redundant if the CLI options parsing occurs
-        return [0] unless config[:returns]
-        return @success_return_codes ||= config[:returns].split(',').collect {|item| item.to_i}
-      end      
     end
   end
 end
-

@@ -1,6 +1,6 @@
 #
-# Author:: Seth Chisamore (<schisamo@opscode.com>)
-# Copyright:: Copyright (c) 2011 Opscode, Inc.
+# Author:: Seth Chisamore (<schisamo@chef.io>)
+# Copyright:: Copyright (c) 2011-2016 Chef Software, Inc.
 # License:: Apache License, Version 2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,6 +19,8 @@
 require 'chef/knife/bootstrap_windows_base'
 require 'chef/knife/winrm'
 require 'chef/knife/winrm_base'
+require 'chef/knife/winrm_knife_base'
+
 
 class Chef
   class Knife
@@ -26,6 +28,7 @@ class Chef
 
       include Chef::Knife::BootstrapWindowsBase
       include Chef::Knife::WinrmBase
+      include Chef::Knife::WinrmCommandSharedFunctions
 
       deps do
         require 'chef/knife/core/windows_bootstrap_context'
@@ -34,33 +37,27 @@ class Chef
         Chef::Knife::Winrm.load_deps
       end
 
-      banner "knife bootstrap windows winrm FQDN (options)"
+      banner 'knife bootstrap windows winrm FQDN (options)'
 
       def run
+        validate_name_args!
+
+        if (Chef::Config[:validation_key] && !File.exist?(File.expand_path(Chef::Config[:validation_key])))
+          if !negotiate_auth? && !(locate_config_value(:winrm_transport) == 'ssl')
+            ui.error('Validatorless bootstrap over unsecure winrm channels could expose your key to network sniffing')
+            exit 1
+          end
+        end
+
+        unless locate_config_value(:winrm_shell) == :cmd
+          ui.warn("The cmd shell is the only valid winrm-shell for 'knife bootstrap windows winrm'. Switching to the cmd shell.")
+          config[:winrm_shell] = :cmd
+        end
+
+        config[:manual] = true
+        configure_session
+
         bootstrap
-      end
-
-
-      def run_command(command = '')
-        winrm = Chef::Knife::Winrm.new
-        winrm.name_args = [ server_name, command ]
-        winrm.config[:winrm_user] = locate_config_value(:winrm_user)
-        winrm.config[:winrm_password] = locate_config_value(:winrm_password)
-        winrm.config[:winrm_transport] = locate_config_value(:winrm_transport)
-        winrm.config[:winrm_ssl_verify_mode] = locate_config_value(:winrm_ssl_verify_mode)
-        winrm.config[:kerberos_keytab_file] = locate_config_value(:kerberos_keytab_file) if locate_config_value(:kerberos_keytab_file)
-        winrm.config[:kerberos_realm] = locate_config_value(:kerberos_realm) if locate_config_value(:kerberos_realm)
-        winrm.config[:kerberos_service] = locate_config_value(:kerberos_service) if locate_config_value(:kerberos_service)
-        winrm.config[:ca_trust_file] = locate_config_value(:ca_trust_file) if locate_config_value(:ca_trust_file)
-        winrm.config[:manual] = true
-        winrm.config[:winrm_port] = locate_config_value(:winrm_port)
-        winrm.config[:suppress_auth_failure] = true
-
-        #If you turn off the return flag, then winrm.run won't atually check and
-        #return the error
-        #codes.  Otherwise, it ignores the return value of the server call.
-        winrm.config[:returns] = "0"
-        winrm.run
       end
 
       protected
@@ -81,10 +78,14 @@ class Chef
           raise RuntimeError, 'Command execution failed.' if status != 0
           ui.info(ui.color("Remote node responded after #{elapsed_time_in_minutes(wait_start_time)} minutes.", :magenta))
           return
-        rescue
+        rescue Errno::ECONNREFUSED => e
+          ui.error("Connection refused connecting to #{locate_config_value(:server_name)}:#{locate_config_value(:winrm_port)}.")
+          raise
+        rescue Exception => e
           retries_left -= 1
           if retries_left <= 0 || (elapsed_time_in_minutes(wait_start_time) > wait_max_minutes)
             ui.error("No response received from remote node after #{elapsed_time_in_minutes(wait_start_time)} minutes, giving up.")
+            ui.error("Exception: #{e.message}")
             raise
           end
           print '.'
@@ -99,4 +100,3 @@ class Chef
     end
   end
 end
-

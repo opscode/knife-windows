@@ -1,6 +1,6 @@
 #
 # Author:: Steven Murawski (<smurawski@chef.io)
-# Copyright:: Copyright (c) 2015 Chef Software, Inc.
+# Copyright:: Copyright (c) 2015-2016 Chef Software, Inc.
 # License:: Apache License, Version 2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -39,6 +39,13 @@ class Chef
             :long => "--attribute ATTR",
             :description => "The attribute to use for opening the connection - default is fqdn",
             :default => "fqdn"
+
+          option :concurrency,
+            :short => "-C NUM",
+            :long => "--concurrency NUM",
+            :description => "The number of allowed concurrent connections",
+            :default => 1,
+            :proc => lambda { |o| o.to_i }
         end
       end
 

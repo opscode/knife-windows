@@ -1,6 +1,6 @@
 #
-# Author:: Chirag Jog (<chirag@clogeny.com>)
-# Copyright:: Copyright (c) 2013-2016 Chef Software, Inc.
+# Author:: Aliasgar Batterywala (<aliasgar.batterywala@clogeny.com>)
+# Copyright:: Copyright (c) 2015-2016 Chef Software, Inc.
 # License:: Apache License, Version 2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,20 +16,17 @@
 # limitations under the License.
 #
 
-require 'chef/knife'
-require 'chef/knife/winrm'
-require 'chef/knife/bootstrap_windows_ssh'
-require 'chef/knife/bootstrap_windows_winrm'
-require 'chef/knife/wsman_test'
-
 class Chef
   class Knife
-    class WindowsHelper < Knife
+    module KnifeWindowsBase
 
-      banner "#{BootstrapWindowsWinrm.banner}\n" +
-              "#{BootstrapWindowsSsh.banner}\n" +
-              "#{Winrm.banner}\n" +
-              "#{WsmanTest.banner}"
+      def locate_config_value(key)
+        key = key.to_sym
+        value = config[key] || Chef::Config[:knife][key] || default_config[key]
+        Chef::Log.debug("Looking for key #{key} and found value #{value}")
+        value
+      end
+
     end
   end
 end

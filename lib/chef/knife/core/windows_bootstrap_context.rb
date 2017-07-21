@@ -1,6 +1,6 @@
 #
-# Author:: Seth Chisamore (<schisamo@opscode.com>)
-# Copyright:: Copyright (c) 2011 Opscode, Inc.
+# Author:: Seth Chisamore (<schisamo@chef.io>)
+# Copyright:: Copyright (c) 2011-2016 Chef Software, Inc.
 # License:: Apache License, Version 2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,7 +17,6 @@
 #
 
 require 'chef/knife/core/bootstrap_context'
-
 # Chef::Util::PathHelper in Chef 11 is a bit juvenile still
 require 'knife-windows/path_helper'
 # require 'chef/util/path_helper'
@@ -34,10 +33,13 @@ class Chef
       class WindowsBootstrapContext < BootstrapContext
         PathHelper = ::Knife::Windows::PathHelper
 
+        attr_accessor :client_pem
+
         def initialize(config, run_list, chef_config, secret=nil)
           @config       = config
           @run_list     = run_list
           @chef_config  = chef_config
+          @secret       = secret
           # Compatibility with Chef 12 and Chef 11 versions
           begin
             # Pass along the secret parameter for Chef 12
@@ -49,7 +51,11 @@ class Chef
         end
 
         def validation_key
-          escape_and_echo(super)
+          if File.exist?(File.expand_path(@chef_config[:validation_key]))
+            IO.read(File.expand_path(@chef_config[:validation_key]))
+          else
+            false
+          end
         end
 
         def secret
@@ -62,24 +68,25 @@ class Chef
 
         def config_content
           client_rb = <<-CONFIG
-log_level        :info
-log_location     STDOUT
-
 chef_server_url  "#{@chef_config[:chef_server_url]}"
 validation_client_name "#{@chef_config[:validation_client_name]}"
-client_key        "c:/chef/client.pem"
-validation_key    "c:/chef/validation.pem"
-
 file_cache_path   "c:/chef/cache"
 file_backup_path  "c:/chef/backup"
 cache_options     ({:path => "c:/chef/cache/checksums", :skip_expires => true})
-
-CONFIG
+          CONFIG
           if @config[:chef_node_name]
             client_rb << %Q{node_name "#{@config[:chef_node_name]}"\n}
           else
             client_rb << "# Using default node name (fqdn)\n"
           end
+
+          if @chef_config[:config_log_level]
+            client_rb << %Q{log_level :#{@chef_config[:config_log_level]}\n}
+          else
+            client_rb << "log_level        :info\n"
+          end
+
+          client_rb << "log_location       #{get_log_location}"
 
           # We configure :verify_api_cert only when it's overridden on the CLI
           # or when specified in the knife config.
@@ -130,12 +137,41 @@ CONFIG
             client_rb << %Q{trusted_certs_dir "c:/chef/trusted_certs"\n}
           end
 
+          if Chef::Config[:fips]
+            client_rb << <<-CONFIG
+fips true
+chef_version = ::Chef::VERSION.split(".")
+unless chef_version[0].to_i > 12 || (chef_version[0].to_i == 12 && chef_version[1].to_i >= 8)
+  raise "FIPS Mode requested but not supported by this client"
+end
+CONFIG
+          end
+
           escape_and_echo(client_rb)
         end
 
+        def get_log_location
+          if @chef_config[:config_log_location].equal?(:win_evt)
+            %Q{:#{@chef_config[:config_log_location]}\n}
+          elsif @chef_config[:config_log_location].equal?(:syslog)
+            raise "syslog is not supported for log_location on Windows OS\n"
+          elsif (@chef_config[:config_log_location].equal?(STDOUT))
+            "STDOUT\n"
+          elsif (@chef_config[:config_log_location].equal?(STDERR))
+            "STDERR\n"
+          elsif @chef_config[:config_log_location].nil? || @chef_config[:config_log_location].empty?
+            "STDOUT\n"
+          elsif @chef_config[:config_log_location]
+            %Q{"#{@chef_config[:config_log_location]}"\n}
+          else
+            "STDOUT\n"
+          end
+        end
+
         def start_chef
+          bootstrap_environment_option = bootstrap_environment.nil? ? '' : " -E #{bootstrap_environment}"
           start_chef = "SET \"PATH=%PATH%;C:\\ruby\\bin;C:\\opscode\\chef\\bin;C:\\opscode\\chef\\embedded\\bin\"\n"
-          start_chef << "chef-client -c c:/chef/client.rb -j c:/chef/first-boot.json -E #{bootstrap_environment}\n"
+          start_chef << "chef-client -c c:/chef/client.rb -j c:/chef/first-boot.json#{bootstrap_environment_option}\n"
         end
 
         def latest_current_windows_chef_version_query
@@ -237,7 +273,13 @@ param(
    [String] $localPath
 )
 
+$ProxyUrl = $env:http_proxy;
 $webClient = new-object System.Net.WebClient;
+
+if ($ProxyUrl -ne '') {
+  $WebProxy = New-Object System.Net.WebProxy($ProxyUrl,$true)
+  $WebClient.Proxy = $WebProxy
+}
 
 $webClient.DownloadFile($remoteUrl, $localPath);
 WGET_PS
@@ -275,8 +317,7 @@ WGET_PS
         end
 
         def first_boot
-          first_boot_attributes_and_run_list = (@config[:first_boot_attributes] || {}).merge(:run_list => @run_list)
-          escape_and_echo(first_boot_attributes_and_run_list.to_json)
+          escape_and_echo(super.to_json)
         end
 
         # escape WIN BATCH special chars
@@ -291,7 +332,7 @@ WGET_PS
         def install_command(executor_quote)
           if @config[:install_as_service]
             "msiexec /qn /log #{executor_quote}%CHEF_CLIENT_MSI_LOG_PATH%#{executor_quote} /i #{executor_quote}%LOCAL_DESTINATION_MSI_PATH%#{executor_quote} ADDLOCAL=#{executor_quote}ChefClientFeature,ChefServiceFeature#{executor_quote}"
-          else              
+          else
             "msiexec /qn /log #{executor_quote}%CHEF_CLIENT_MSI_LOG_PATH%#{executor_quote} /i #{executor_quote}%LOCAL_DESTINATION_MSI_PATH%#{executor_quote}"
           end
         end
@@ -301,7 +342,7 @@ WGET_PS
         def trusted_certs_content
           content = ""
           if @chef_config[:trusted_certs_dir]
-            Dir.glob(File.join(PathHelper.escape_glob(@chef_config[:trusted_certs_dir]), "*.{crt,pem}")).each do |cert|
+            Dir.glob(File.join(PathHelper.escape_glob_dir(@chef_config[:trusted_certs_dir]), "*.{crt,pem}")).each do |cert|
               content << "> #{bootstrap_directory}/trusted_certs/#{File.basename(cert)} (\n" +
                          escape_and_echo(IO.read(File.expand_path(cert))) + "\n)\n"
             end
